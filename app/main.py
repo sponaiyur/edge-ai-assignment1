@@ -34,11 +34,11 @@ class Reading(BaseModel):
     # Give every field a sensible range, e.g. Field(ge=..., le=...), so a glitch is refused
     # with HTTP 422 instead of being answered with a made-up number. Base the limits on what a
     # real sensor can report, not on your data's min and max: real readings must still get answers.
-    battery_v: float
-    temp_c: float
-    rings_per_day: float
-    wifi_rssi_dbm: float
-    age_months: float
+    battery_v: float = Field(ge=2.0, le=4.5)          # Li-ion cell: below ~2 V is dead/disconnected, 4.2 V full
+    temp_c: float = Field(ge=-40.0, le=85.0)          # industrial sensor range; rejects the -127 C DS18B20 sentinel
+    rings_per_day: float = Field(ge=0.0, le=200.0)    # a count can't be negative
+    wifi_rssi_dbm: float = Field(ge=-120.0, le=-10.0)  # RSSI is always negative; 0 dBm is a glitch
+    age_months: float = Field(ge=0.0, le=600.0)       # an age can't be negative
 
 
 class Batch(BaseModel):
@@ -51,14 +51,23 @@ ms = lambda t0: round((time.perf_counter() - t0) * 1000, 3)
 
 @app.get("/model_info")
 def model_info():
-    # TODO Mission 2 + 4: return your per-layer table, worked out FROM THE NETWORK (net.net),
-    # not typed in by hand, so it stays right if you change the layer sizes. Exactly these keys:
-    # {"layers": [{"name": "linear1", "in": 5, "out": 32, "params": ..., "bytes_f32": ..., "macs": ...}, ...],
-    #  "total_params": ..., "total_bytes_f32": ..., "total_bytes_int8": ..., "total_macs": ...,
-    #  "fits_300kb_sram_f32": true/false, "fits_300kb_sram_int8": true/false}
-    # Count only the Linear layers (ReLU has no parameters). Clue: a Linear layer m has
-    # m.in_features and m.out_features.
-    return {"layers": [], "total_params": 0}
+    layers = []
+    i = 1
+    for m in net.net:
+        if isinstance(m, torch.nn.Linear):
+            p = m.in_features * m.out_features + m.out_features
+            layers.append({"name": f"linear{i}", "in": m.in_features, "out": m.out_features,
+                           "params": p, "bytes_f32": p * 4, "macs": m.in_features * m.out_features})
+            i += 1
+    total_params = sum(l["params"] for l in layers)
+    total_bytes_f32 = sum(l["bytes_f32"] for l in layers)
+    total_bytes_int8 = total_params
+    total_macs = sum(l["macs"] for l in layers)
+    SRAM = 300 * 1024
+    return {"layers": layers, "total_params": total_params, "total_bytes_f32": total_bytes_f32,
+            "total_bytes_int8": total_bytes_int8, "total_macs": total_macs,
+            "fits_300kb_sram_f32": total_bytes_f32 <= SRAM,
+            "fits_300kb_sram_int8": total_bytes_int8 <= SRAM}
 
 
 @app.get("/health")
@@ -75,13 +84,20 @@ async def run(request: Request, schema):
         return JSONResponse(status_code=422, content={"error": "bad reading", "detail": json.loads(e.json())})
     t["parse"] = ms(t0)
     rows = data.rows if isinstance(data, Batch) else [data]
-    # TODO Mission 3: time each of the three stages below the same way "parse" is timed above,
-    # storing them as t["normalise"], t["inference"] and t["build"].
+    # Single and batch requests share this one code path, so their predictions can't diverge.
+    t0 = time.perf_counter()
     x = (np.array([[getattr(r, f) for f in FEATURES] for r in rows], np.float32) - MU) / SD
+    t["normalise"] = ms(t0)
+    t0 = time.perf_counter()
+    # One row at a time (shape [1, 5]) so a batch row runs the exact same matmul kernel as a
+    # single /predict; a vectorised call picks a different float32 kernel and can flip the 2nd decimal.
     with torch.no_grad():
-        y = net(torch.from_numpy(x)).numpy()
+        y = np.array([net(torch.from_numpy(x[i:i + 1])).numpy()[0] for i in range(len(x))], np.float32)
+    t["inference"] = ms(t0)
+    t0 = time.perf_counter()
     days = [round(float(v), 2) for v in np.maximum(y, 0)]
     body = {"days_left": days if isinstance(data, Batch) else days[0]}
+    t["build"] = ms(t0)
     t["server_total"] = ms(t_all)
     body["timings_ms"] = t
     return body
