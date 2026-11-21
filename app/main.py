@@ -3,7 +3,7 @@ app/main.py -- the doorbell battery API.
 
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-GET  /health          -> {"status": "ok", "team": 7, "params": 1281, "val_mae": 3.4}
+GET  /health          -> {"status": "ok", "team": <int>, "params": <int>, "val_mae": <float>}
 GET  /model_info      -> the per-layer table: params, bytes, MACs, and whether it fits the doorbell
 POST /predict         one reading  -> {"days_left": 52.1, "timings_ms": {...}}
 POST /predict_batch   {"rows": [reading, ...]} -> {"days_left": [...], "timings_ms": {...}}
@@ -33,11 +33,11 @@ class Reading(BaseModel):
     # A doorbell sends glitches like the ones found in Mission 1. Every field has a range, so a
     # glitch is refused with HTTP 422 instead of being answered with a made-up number. The limits
     # are what a real sensor can report, not the data's min and max: real readings still get answers.
-    battery_v: float = Field(ge=2.0, le=4.5)          # Li-ion cell: below ~2 V is dead/disconnected, 4.2 V full
-    temp_c: float = Field(ge=-40.0, le=85.0)          # industrial sensor range; rejects the -127 C DS18B20 sentinel
-    rings_per_day: float = Field(ge=0.0, le=200.0)    # a count can't be negative
-    wifi_rssi_dbm: float = Field(ge=-120.0, le=-10.0)  # RSSI is always negative; 0 dBm is a glitch
-    age_months: float = Field(ge=0.0, le=600.0)       # an age can't be negative
+    battery_v: float = Field(ge=2.0, le=4.5, allow_inf_nan=False)          # Li-ion cell: below ~2 V is dead/disconnected, 4.2 V full
+    temp_c: float = Field(ge=-40.0, le=85.0, allow_inf_nan=False)          # industrial sensor range; rejects the -127 C DS18B20 sentinel
+    rings_per_day: float = Field(ge=0.0, le=200.0, allow_inf_nan=False)    # a count can't be negative
+    wifi_rssi_dbm: float = Field(ge=-120.0, le=-10.0, allow_inf_nan=False)  # RSSI is always negative; 0 dBm is a glitch
+    age_months: float = Field(ge=0.0, le=600.0, allow_inf_nan=False)       # an age can't be negative
 
 
 class Batch(BaseModel):
@@ -80,7 +80,7 @@ async def run(request: Request, schema):
     try:
         data = schema.model_validate_json(await request.body())
     except ValidationError as e:
-        return JSONResponse(status_code=422, content={"error": "bad reading", "detail": json.loads(e.json())})
+        return JSONResponse(status_code=422, content={"error": "bad reading", "detail": json.loads(e.json(include_input=False))})
     t["parse"] = ms(t0)
     rows = data.rows if isinstance(data, Batch) else [data]
     # Single and batch requests share this one code path, so their predictions can't diverge.
