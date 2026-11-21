@@ -1,5 +1,5 @@
 """
-app/main.py -- STARTER battery API. Look for TODO.
+app/main.py -- the doorbell battery API.
 
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 
@@ -30,10 +30,9 @@ N_PARAMS = sum(p.numel() for p in net.parameters())
 
 
 class Reading(BaseModel):
-    # TODO Mission 3: a doorbell will send you glitches like the ones you found in Mission 1.
-    # Give every field a sensible range, e.g. Field(ge=..., le=...), so a glitch is refused
-    # with HTTP 422 instead of being answered with a made-up number. Base the limits on what a
-    # real sensor can report, not on your data's min and max: real readings must still get answers.
+    # A doorbell sends glitches like the ones found in Mission 1. Every field has a range, so a
+    # glitch is refused with HTTP 422 instead of being answered with a made-up number. The limits
+    # are what a real sensor can report, not the data's min and max: real readings still get answers.
     battery_v: float = Field(ge=2.0, le=4.5)          # Li-ion cell: below ~2 V is dead/disconnected, 4.2 V full
     temp_c: float = Field(ge=-40.0, le=85.0)          # industrial sensor range; rejects the -127 C DS18B20 sentinel
     rings_per_day: float = Field(ge=0.0, le=200.0)    # a count can't be negative
